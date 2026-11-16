@@ -312,6 +312,41 @@ class Key {
   }
 
   /**
+   * Returns the primary key if it is available for certifying other keys,
+   * i.e. for issuing and verifying third-party certifications.
+   * Per RFC4880, certifications are always issued and verified using the
+   * primary key, hence subkeys are never considered, even if they carry
+   * the certification key flag.
+   * @param  {module:type/keyid~KeyID} [keyID] - key ID of a specific key to retrieve
+   * @param  {Date} [date] - use the given date to check key validity instead of the current date
+   * @param  {Object} [userID] - filter keys for the given user ID
+   * @param  {Object} [config] - Full configuration, defaults to openpgp.config
+   * @returns {Promise<Key>} certification key
+   * @throws if no valid certification key was found
+   * @async
+   */
+  async getCertificationKey(keyID = null, date = new Date(), userID = {}, config = defaultConfig) {
+    await this.verifyPrimaryKey(date, userID, config);
+    const primaryKey = this.keyPacket;
+    try {
+      helper.checkKeyRequirements(primaryKey, config);
+    } catch (err) {
+      throw util.wrapError('Could not verify primary key', err);
+    }
+    let exception;
+    try {
+      const selfCertification = await this.getPrimarySelfSignature(date, userID, config);
+      if ((!keyID || primaryKey.getKeyID().equals(keyID)) &&
+          helper.validateCertificationKeyPacket(primaryKey, selfCertification, config)) {
+        return this;
+      }
+    } catch (e) {
+      exception = e;
+    }
+    throw util.wrapError('Could not find valid certification key packet in key ' + this.getKeyID().toHex(), exception);
+  }
+
+  /**
    * Returns last created key or key by given keyID that is available for encryption or decryption
    * @param  {module:type/keyid~KeyID} [keyID] - key ID of a specific key to retrieve
    * @param  {Date}   [date] - use the fiven date date to  to check key validity instead of the current date

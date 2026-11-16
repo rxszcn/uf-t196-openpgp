@@ -2660,6 +2660,44 @@ function versionSpecificTests() {
     }
   });
 
+  it('Sign and verify key with certification-only primary key', async function() {
+    // strip the `signData` flag from the certifying key's self-signature,
+    // leaving a primary key that may only be used for certification
+    const { privateKey: certifyingKey } = await openpgp.generateKey({
+      userIDs: [{ name: 'certifier', email: 'certifier@example.com' }],
+      format: 'object'
+    });
+    const v6Key = openpgp.config.v6Keys;
+    const selfSignature = v6Key ? certifyingKey.directSignatures[0] : certifyingKey.users[0].selfCertifications[0];
+    const signedData = v6Key ?
+      { key: certifyingKey.keyPacket } :
+      { userID: certifyingKey.users[0].userID, key: certifyingKey.keyPacket };
+    selfSignature.keyFlags = [openpgp.enums.keyFlags.certifyKeys];
+    // re-signing requires dropping the existing salt notation
+    selfSignature.rawNotations = selfSignature.rawNotations.filter(({ name }) => name !== 'salt@notations.openpgpjs.org');
+    await selfSignature.sign(certifyingKey.keyPacket, signedData, undefined, false, openpgp.config);
+
+    // a certification-only primary key cannot be used to sign data
+    await expect(certifyingKey.getSigningKey()).to.be.rejectedWith(/Could not find valid signing key packet/);
+    // but it can be used to certify other keys
+    const certificationKey = await certifyingKey.getCertificationKey();
+    expect(certificationKey.getKeyID().toHex()).to.equal(certifyingKey.getKeyID().toHex());
+
+    const { privateKey: targetKey } = await openpgp.generateKey({
+      userIDs: [{ name: 'target', email: 'target@example.com' }],
+      format: 'object'
+    });
+    // creation side: issue a third-party certification using the certification-only key
+    const signedTargetKey = await targetKey.signPrimaryUser([certifyingKey]);
+    // verification side: verify the certification using the certification-only public key
+    const certifyingPublicKey = certifyingKey.toPublic();
+    const signatures = await signedTargetKey.verifyPrimaryUser([certifyingPublicKey]);
+    expect(signatures.length).to.equal(2);
+    expect(signatures[0].valid).to.be.null;
+    expect(signatures[1].keyID.toHex()).to.equal(certifyingKey.getKeyID().toHex());
+    expect(signatures[1].valid).to.be.true;
+  });
+
   it('Sign key and verify with wrong key - primary user', async function() {
     let publicKey = await openpgp.readKey({ armoredKey: pub_sig_test });
     const wrongKey = await openpgp.readKey({ armoredKey: wrong_key });
