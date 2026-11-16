@@ -486,8 +486,11 @@ export function validateCertificationKeyPacket(keyPacket, signature, config) {
       if (!signature.keyFlags && !config.allowMissingKeyFlags) {
         throw new Error('None of the key flags is set: consider passing `config.allowMissingKeyFlags`');
       }
+      // Keys flagged for signing (only) are also accepted, for compatibility with
+      // certifications that were issued or verified using signing keys.
       return !signature.keyFlags ||
-        (signature.keyFlags[0] & enums.keyFlags.certifyKeys) !== 0;
+        (signature.keyFlags[0] & enums.keyFlags.certifyKeys) !== 0 ||
+        (signature.keyFlags[0] & enums.keyFlags.signData) !== 0;
     default:
       return false;
   }

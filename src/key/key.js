@@ -312,16 +312,15 @@ class Key {
   }
 
   /**
-   * Returns the primary key if it is available for certifying other keys,
-   * i.e. for issuing and verifying third-party certifications.
-   * Per RFC4880, certifications are always issued and verified using the
-   * primary key, hence subkeys are never considered, even if they carry
-   * the certification key flag.
+   * Returns last created key or key by given keyID that is available for
+   * certifying other keys, i.e. for issuing and verifying third-party
+   * certifications. Unlike `getSigningKey`, this also accepts certification-only
+   * keys (carrying the `certifyKeys` key flag but not `signData`).
    * @param  {module:type/keyid~KeyID} [keyID] - key ID of a specific key to retrieve
    * @param  {Date} [date] - use the given date to check key validity instead of the current date
    * @param  {Object} [userID] - filter keys for the given user ID
    * @param  {Object} [config] - Full configuration, defaults to openpgp.config
-   * @returns {Promise<Key>} certification key
+   * @returns {Promise<Key|Subkey>} certification key
    * @throws if no valid certification key was found
    * @async
    */
@@ -333,11 +332,44 @@ class Key {
     } catch (err) {
       throw util.wrapError('Could not verify primary key', err);
     }
+    // Prefer the most recently created valid subkey, or the subkey with
+    // the highest algorithm ID in case of equal creation timestamps.
+    const subkeys = this.subkeys.slice().sort((a, b) => (
+      b.keyPacket.created - a.keyPacket.created ||
+      b.keyPacket.algorithm - a.keyPacket.algorithm
+    ));
     let exception;
+    for (const subkey of subkeys) {
+      if (!keyID || subkey.getKeyID().equals(keyID)) {
+        try {
+          await subkey.verify(date, config);
+          const dataToVerify = { key: primaryKey, bind: subkey.keyPacket };
+          const bindingSignature = await helper.getLatestValidSignature(
+            subkey.bindingSignatures, primaryKey, enums.signature.subkeyBinding, dataToVerify, date, config
+          );
+          if (!helper.validateCertificationKeyPacket(subkey.keyPacket, bindingSignature, config)) {
+            continue;
+          }
+          if (!bindingSignature.embeddedSignature) {
+            throw new Error('Missing embedded signature');
+          }
+          // verify embedded signature
+          await helper.getLatestValidSignature(
+            [bindingSignature.embeddedSignature], subkey.keyPacket, enums.signature.keyBinding, dataToVerify, date, config
+          );
+          helper.checkKeyRequirements(subkey.keyPacket, config);
+          return subkey;
+        } catch (e) {
+          exception = e;
+        }
+      }
+    }
+
     try {
       const selfCertification = await this.getPrimarySelfSignature(date, userID, config);
       if ((!keyID || primaryKey.getKeyID().equals(keyID)) &&
           helper.validateCertificationKeyPacket(primaryKey, selfCertification, config)) {
+        helper.checkKeyRequirements(primaryKey, config);
         return this;
       }
     } catch (e) {
